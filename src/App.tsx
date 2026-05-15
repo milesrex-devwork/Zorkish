@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { initWiki } from "./wiki/access";
 
+let hasLoggedWikiInitialization = false;
+
 export default function App() {
   const [wikiError, setWikiError] = useState(false);
 
@@ -9,7 +11,10 @@ export default function App() {
 
     initWiki()
       .then(() => {
-        console.log("IndexedDB initialized");
+        if (!hasLoggedWikiInitialization) {
+          console.log("IndexedDB initialized");
+          hasLoggedWikiInitialization = true;
+        }
       })
       .catch(() => {
         if (isMounted) {
