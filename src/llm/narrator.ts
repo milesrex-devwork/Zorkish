@@ -78,7 +78,10 @@ export async function narrateTurn(
       input.runtimeContext.currentRoomId,
       input.runtimeContext.inventory,
     ).filter((object) => input.runtimeContext.inventory.includes(object.id)),
-    lives_remaining: input.runtimeContext.livesRemaining,
+    lives_remaining: death.is_death ? null : input.runtimeContext.livesRemaining,
+    lives_state_note: death.is_death
+      ? "Life counts and undo availability are UI-owned; do not mention them."
+      : null,
     recent_turns: input.runtimeContext.recentTurns
       .slice(0, 10)
       .reverse()
@@ -145,7 +148,7 @@ Your task:
 - If intent is "off_rails_harmless", use off_rails_flavor as a seed and make clear that no mechanical state changed.
 - If intent is "recall", answer from recent_turns, active_observations, inventory, or engine responses only.
 - Keep most turns between one and three short paragraphs.
-- If death.is_death is true, write a longer, amplified death scene in this voice. Do not quote the engine's blunt death banner directly. End with exactly one clean retro ASCII-art block in a rectangular frame. The first and last lines of that block must begin with "+". Do not label the art, do not use markdown fences, and do not mention undo choices; the UI handles that.
+- If death.is_death is true, write a longer, amplified death scene in this voice. Do not quote the engine's blunt death banner directly. End with exactly one clean retro ASCII-art block in a rectangular frame. The first and last lines of that block must begin with "+". Do not label the art, do not use markdown fences, and do not mention undo choices, life counts, whether a life remains, or whether this is the final death; the UI handles those mechanical truths.
 
 Disposition: middle helpfulness, moderate playfulness.`;
 }
