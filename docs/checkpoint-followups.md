@@ -15,3 +15,15 @@
 - Intent mapping now uses exact API model ID
   `nvidia/qwen/qwen3-next-80b-a3b-instruct`; narration remains on
   `aws/anthropic/bedrock-claude-sonnet-4-6` for voice quality.
+
+## Checkpoint 6 Observations
+
+- Canonical v3 Zork does not recognize `undo` or `$undo` as parser commands.
+  The spike implements single-level undo in the browser wrapper by restoring a
+  fresh engine and replaying the committed command history up to the pre-turn
+  snapshot. This preserves the required player-facing behavior while staying
+  compatible with the canonical story file.
+- Zork's built-in death path resurrects the player to the Forest after printing
+  the death banner. Zorkish treats the engine death as terminal until the
+  overlay prompt resolves, preserving the actual death location for narration,
+  the Wiki death record, and undo.
