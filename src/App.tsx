@@ -38,6 +38,23 @@ type TerminalEntry = {
   text: string;
 };
 
+type TurnTimingLog = {
+  turn_number: number;
+  player_input: string;
+  intent_ms: number;
+  intent_proxy_upstream_ms: number | null;
+  intent_browser_request_ms: number | null;
+  narration_ms: number;
+  narration_first_token_ms: number | null;
+  narration_browser_request_ms: number | null;
+};
+
+declare global {
+  interface Window {
+    __zorkishTimingLog?: TurnTimingLog[];
+  }
+}
+
 export default function App() {
   const engineRef = useRef<ZMachineEngineClient | null>(null);
   const nextEntryId = useRef(1);
@@ -190,6 +207,12 @@ export default function App() {
       );
 
       replaceEntryText(narrationEntryId, narration.text);
+      logTurnTiming({
+        turnNumber,
+        playerInput,
+        intentMapping,
+        narration,
+      });
       await commitTurn({
         turnNumber,
         playerInput,
@@ -388,6 +411,33 @@ export default function App() {
         entry.id === id ? { ...entry, text } : entry,
       ),
     );
+  }
+
+  function logTurnTiming(input: {
+    turnNumber: number;
+    playerInput: string;
+    intentMapping: Awaited<ReturnType<typeof mapPlayerInputToIntent>>;
+    narration: NarrationResult;
+  }) {
+    const timing: TurnTimingLog = {
+      turn_number: input.turnNumber,
+      player_input: input.playerInput,
+      intent_ms: input.intentMapping.latency_ms,
+      intent_proxy_upstream_ms:
+        input.intentMapping.proxy_timing?.proxy_upstream_ms ?? null,
+      intent_browser_request_ms:
+        input.intentMapping.proxy_timing?.browser_request_ms ?? null,
+      narration_ms: input.narration.latency_ms,
+      narration_first_token_ms:
+        input.narration.proxy_timing.first_token_ms ?? null,
+      narration_browser_request_ms:
+        input.narration.proxy_timing.browser_request_ms ?? null,
+    };
+    window.__zorkishTimingLog = [
+      ...(window.__zorkishTimingLog ?? []),
+      timing,
+    ];
+    console.log("Zorkish turn timing", timing);
   }
 
   return (
