@@ -67,6 +67,7 @@ export type RecordDeathInput = {
   narration?: Record<string, unknown>;
   wasUndone?: boolean;
   lifeSpentId?: string | null;
+  spendLife?: boolean;
 };
 
 export type RecordObservationInput = {
@@ -97,6 +98,18 @@ export type UpdateRunDiscoveryInput = {
   inventory?: string[];
   engineSaveId?: string;
   score?: number;
+};
+
+export type MarkDeathUndoneInput = {
+  runId: string;
+  deathId: string;
+  lifeSpentId?: string;
+};
+
+export type EndRunInput = {
+  runId: string;
+  reason: RunRecord["ended_reason"];
+  summary?: string;
 };
 
 function createId(prefix: string) {
@@ -333,6 +346,29 @@ export async function recordTurn(input: RecordTurnInput) {
   return turn;
 }
 
+export async function mergeTurnOutcome(
+  turnId: string,
+  outcomePatch: Record<string, unknown>,
+) {
+  const database = await initWiki();
+  const tx = database.transaction("turns", "readwrite");
+  const turn = await tx.store.get(turnId);
+
+  if (!turn) {
+    await tx.done;
+    return null;
+  }
+
+  turn.outcome = {
+    ...turn.outcome,
+    ...outcomePatch,
+  };
+  await tx.store.put(turn);
+  await tx.done;
+
+  return turn;
+}
+
 export async function getRecentTurns(runId: string, limit = 10) {
   const database = await initWiki();
   const turns: TurnRecord[] = [];
@@ -382,8 +418,10 @@ export async function recordDeath(input: RecordDeathInput) {
 
   if (run) {
     run.stats.death_count += 1;
-    run.stats.lives_spent += 1;
-    run.lives_remaining = Math.max(0, run.lives_remaining - 1);
+    if (input.spendLife) {
+      run.stats.lives_spent += 1;
+      run.lives_remaining = Math.max(0, run.lives_remaining - 1);
+    }
     if (!run.discovered.deaths_experienced.includes(input.deathType)) {
       run.discovered.deaths_experienced.push(input.deathType);
     }
@@ -394,6 +432,56 @@ export async function recordDeath(input: RecordDeathInput) {
   await tx.done;
 
   return death;
+}
+
+export async function markDeathUndoneAndSpendLife(
+  input: MarkDeathUndoneInput,
+) {
+  const database = await initWiki();
+  const tx = database.transaction(["runs", "deaths"], "readwrite");
+  const [run, death] = await Promise.all([
+    tx.objectStore("runs").get(input.runId),
+    tx.objectStore("deaths").get(input.deathId),
+  ]);
+
+  if (!run || !death) {
+    await tx.done;
+    return {
+      ok: false as const,
+      reason: "missing_record" as const,
+      run: run ?? null,
+      death: death ?? null,
+    };
+  }
+
+  if (run.lives_remaining <= 0) {
+    await tx.done;
+    return {
+      ok: false as const,
+      reason: "no_lives" as const,
+      run,
+      death,
+    };
+  }
+
+  if (!death.was_undone) {
+    death.was_undone = true;
+    death.life_spent_id = input.lifeSpentId ?? createId("life_spent");
+    run.stats.lives_spent += 1;
+    run.lives_remaining = Math.max(0, run.lives_remaining - 1);
+    await Promise.all([
+      tx.objectStore("deaths").put(death),
+      tx.objectStore("runs").put(run),
+    ]);
+  }
+
+  await tx.done;
+
+  return {
+    ok: true as const,
+    run,
+    death,
+  };
 }
 
 export async function getDeathsForRun(runId: string) {
@@ -492,6 +580,29 @@ export async function updateRunDiscovery(input: UpdateRunDiscoveryInput) {
     input.engineSaveId ?? run.current_state.engine_save_id;
   run.current_state.last_input_at = Date.now();
   run.stats.score = input.score ?? run.stats.score;
+
+  await tx.store.put(run);
+  await tx.done;
+
+  return run;
+}
+
+export async function endRun(input: EndRunInput) {
+  const database = await initWiki();
+  const tx = database.transaction("runs", "readwrite");
+  const run = await tx.store.get(input.runId);
+
+  if (!run) {
+    await tx.done;
+    return null;
+  }
+
+  run.ended_at = Date.now();
+  run.ended_reason = input.reason;
+  run.ended_summary = input.summary ?? run.ended_summary;
+  if (input.reason === "death" || input.reason === "hardcore_reset") {
+    run.lives_remaining = 0;
+  }
 
   await tx.store.put(run);
   await tx.done;
