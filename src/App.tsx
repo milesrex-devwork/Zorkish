@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { GameDataDebugView } from "./components/GameDataDebugView";
 import { WikiDebugView } from "./components/WikiDebugView";
 import { ZMachineEngineClient } from "./engine/engine-client";
 import { initWiki } from "./wiki/access";
@@ -190,7 +191,12 @@ export default function App() {
             </button>
           </form>
         </section>
-        {import.meta.env.DEV ? <WikiDebugView /> : null}
+        {import.meta.env.DEV ? (
+          <>
+            <GameDataDebugView />
+            <WikiDebugView />
+          </>
+        ) : null}
       </div>
     </main>
   );
