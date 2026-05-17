@@ -64,11 +64,12 @@ export default function App() {
         setIsReady(true);
         setIsRunning(false);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!isMounted) {
           return;
         }
 
+        console.error("Z-machine startup failed", error);
         setEntries([
           {
             id: nextEntryId.current++,
@@ -95,7 +96,8 @@ export default function App() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const command = input.trim();
+    const formData = new FormData(event.currentTarget);
+    const command = String(formData.get("command") ?? "").trim();
     if (!command || !isReady || isRunning) {
       return;
     }
@@ -112,7 +114,8 @@ export default function App() {
     try {
       const response = await engine.sendCommand(command);
       appendEntry("engine", response.text);
-    } catch {
+    } catch (error) {
+      console.error("Z-machine command failed", error);
       appendEntry("system", "The dungeon flickers. The command did not land.");
     } finally {
       setIsRunning(false);
@@ -172,6 +175,7 @@ export default function App() {
               autoComplete="off"
               className="min-w-0 flex-1 border border-amber-100/15 bg-stone-900 px-4 py-3 font-mono text-sm text-stone-100 outline-none transition focus:border-amber-200/60"
               disabled={!isReady || isRunning}
+              name="command"
               onChange={(event) => setInput(event.target.value)}
               placeholder={isReady ? "Type a Zork command..." : "Starting engine..."}
               value={input}

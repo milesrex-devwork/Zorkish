@@ -163,9 +163,9 @@ class WorkerGlkOte {
     }
 
     if (interval) {
-      this.timerId = window.setInterval(() => {
+      this.timerId = setInterval(() => {
         this.sendEvent({ type: "timer" });
-      }, interval);
+      }, interval) as unknown as number;
     }
   }
 
@@ -249,10 +249,10 @@ function createPendingTurn(requestId: number, command: string | null): PendingTu
     command,
     chunks: [],
     latestUpdate: null,
-    timeoutId: window.setTimeout(() => {
+    timeoutId: setTimeout(() => {
       postError(requestId, "The Z-machine did not respond in time.");
       pendingTurn = null;
-    }, 10000),
+    }, 10000) as unknown as number,
   };
 }
 
