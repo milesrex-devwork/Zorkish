@@ -19,7 +19,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",   # Vite dev server
+        "http://localhost:5174",   # Vite dev server, alternate port
+        "http://127.0.0.1:5173",   # Vite dev server
+        "http://127.0.0.1:5174",   # Vite dev server, alternate port
         "http://localhost:4173",   # Vite preview
+        "http://127.0.0.1:4173",   # Vite preview
         # Add production origin here when deployed
     ],
     allow_credentials=False,
@@ -84,4 +88,3 @@ async def llm_proxy(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
