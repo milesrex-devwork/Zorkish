@@ -33,6 +33,28 @@ type Match<T> = {
   record: T;
 };
 
+const REQUIRED_VERBS = [
+  "take",
+  "drop",
+  "look",
+  "examine",
+  "north",
+  "south",
+  "east",
+  "west",
+  "up",
+  "down",
+  "open",
+  "close",
+  "attack",
+  "kill",
+  "give",
+  "read",
+  "eat",
+  "drink",
+  "inventory",
+];
+
 export function GameDataDebugView() {
   const [gameData, setGameData] = useState<GameData | null>(null);
   const [query, setQuery] = useState("kitchen");
@@ -68,6 +90,28 @@ export function GameDataDebugView() {
           " ",
         ),
       ),
+    [gameData, normalizedQuery],
+  );
+  const verbMatches = useMemo(
+    () =>
+      (gameData?.verbs ?? []).filter((verb) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+        return verb.includes(normalizedQuery);
+      }),
+    [gameData, normalizedQuery],
+  );
+  const combinationMatches = useMemo(
+    () =>
+      (gameData?.verb_object_combinations ?? []).filter((combo) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+        return `${combo.verb} ${combo.preposition}`
+          .toLowerCase()
+          .includes(normalizedQuery);
+      }),
     [gameData, normalizedQuery],
   );
 
@@ -114,7 +158,28 @@ export function GameDataDebugView() {
         />
       </dl>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+      <section className="mt-4">
+        <h3 className="font-medium text-amber-100">Required Verbs</h3>
+        <ul className="mt-2 flex flex-wrap gap-2 font-mono">
+          {REQUIRED_VERBS.map((verb) => {
+            const isPresent = gameData?.verbs.includes(verb) ?? false;
+            return (
+              <li
+                className={`border px-2 py-1 ${
+                  isPresent
+                    ? "border-emerald-300/30 text-emerald-100"
+                    : "border-red-300/40 text-red-100"
+                }`}
+                key={verb}
+              >
+                {verb}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-4">
         <section>
           <h3 className="font-medium text-amber-100">Rooms</h3>
           <div className="mt-2 space-y-3">
@@ -131,6 +196,24 @@ export function GameDataDebugView() {
               <ObjectDebugEntry id={id} key={id} object={record} />
             ))}
           </div>
+        </section>
+
+        <section>
+          <h3 className="font-medium text-amber-100">Verbs</h3>
+          <DebugList
+            items={verbMatches.slice(0, 12)}
+            noneText="No matching verbs"
+          />
+        </section>
+
+        <section>
+          <h3 className="font-medium text-amber-100">Verb Combos</h3>
+          <DebugList
+            items={combinationMatches
+              .slice(0, 12)
+              .map((combo) => `${combo.verb} ${combo.preposition}`)}
+            noneText="No matching combos"
+          />
         </section>
       </div>
 
@@ -190,6 +273,18 @@ function DebugStat({ label, value }: { label: string; value: string | number }) 
   );
 }
 
+function DebugList({ items, noneText }: { items: string[]; noneText: string }) {
+  return (
+    <ul className="mt-2 space-y-1 font-mono text-stone-300">
+      {items.length > 0 ? (
+        items.map((item) => <li key={item}>{item}</li>)
+      ) : (
+        <li className="text-stone-500">{noneText}</li>
+      )}
+    </ul>
+  );
+}
+
 function RoomDebugEntry({ id, room }: { id: string; room: RoomRecord }) {
   const exits = Object.entries(room.exits)
     .filter(([, target]) => target)
@@ -199,7 +294,7 @@ function RoomDebugEntry({ id, room }: { id: string; room: RoomRecord }) {
   return (
     <article className="border border-amber-100/10 bg-stone-900/50 p-3">
       <h4 className="font-mono text-amber-100">
-        {id} · {room.name}
+        {id} - {room.name}
       </h4>
       <p className="mt-2 line-clamp-3 text-stone-300">{room.description}</p>
       <p className="mt-2 font-mono text-stone-400">{exits || "no exits"}</p>
@@ -220,7 +315,7 @@ function ObjectDebugEntry({
   return (
     <article className="border border-amber-100/10 bg-stone-900/50 p-3">
       <h4 className="font-mono text-amber-100">
-        {id} · {object.name}
+        {id} - {object.name}
       </h4>
       <p className="mt-2 line-clamp-3 text-stone-300">{object.description}</p>
       <p className="mt-2 font-mono text-stone-400">

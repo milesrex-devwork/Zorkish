@@ -86,6 +86,19 @@ export type RecordSaveInput = {
   quetzalBlob: ArrayBuffer | Blob;
 };
 
+export type UpdateRunDiscoveryInput = {
+  runId: string;
+  rooms?: string[];
+  objects?: string[];
+  npcs?: string[];
+  puzzlesCompleted?: string[];
+  deathsExperienced?: string[];
+  currentRoom?: string;
+  inventory?: string[];
+  engineSaveId?: string;
+  score?: number;
+};
+
 function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`;
 }
@@ -271,6 +284,11 @@ export async function createRun(input: CreateRunInput) {
   return run;
 }
 
+export async function getRun(runId: string) {
+  const database = await initWiki();
+  return database.get("runs", runId);
+}
+
 export async function recordTurn(input: RecordTurnInput) {
   const database = await initWiki();
   const now = Date.now();
@@ -447,4 +465,48 @@ export async function getLatestSaveForRun(runId: string) {
     .openCursor(IDBKeyRange.bound([runId, 0], [runId, Number.MAX_SAFE_INTEGER]), "prev");
 
   return cursor?.value ?? null;
+}
+
+export async function updateRunDiscovery(input: UpdateRunDiscoveryInput) {
+  const database = await initWiki();
+  const tx = database.transaction("runs", "readwrite");
+  const run = await tx.store.get(input.runId);
+
+  if (!run) {
+    await tx.done;
+    return null;
+  }
+
+  addUnique(run.discovered.rooms, input.rooms);
+  addUnique(run.discovered.objects, input.objects);
+  addUnique(run.discovered.npcs, input.npcs);
+  addUnique(run.discovered.puzzles_completed, input.puzzlesCompleted);
+  addUnique(run.discovered.deaths_experienced, input.deathsExperienced);
+
+  run.stats.rooms_discovered = run.discovered.rooms.length;
+  run.stats.objects_discovered = run.discovered.objects.length;
+  run.current_state.current_room =
+    input.currentRoom ?? run.current_state.current_room;
+  run.current_state.inventory = input.inventory ?? run.current_state.inventory;
+  run.current_state.engine_save_id =
+    input.engineSaveId ?? run.current_state.engine_save_id;
+  run.current_state.last_input_at = Date.now();
+  run.stats.score = input.score ?? run.stats.score;
+
+  await tx.store.put(run);
+  await tx.done;
+
+  return run;
+}
+
+function addUnique(target: string[], values: string[] | undefined) {
+  if (!values) {
+    return;
+  }
+
+  for (const value of values) {
+    if (!target.includes(value)) {
+      target.push(value);
+    }
+  }
 }
