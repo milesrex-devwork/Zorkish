@@ -15,6 +15,8 @@ export const NARRATION_MODEL = INTENT_MODEL;
 export type ExecutedEngineResponse = {
   command: string;
   text: string;
+  detected_room_id: string | null;
+  current_room_id_after_command: string;
 };
 
 export type NarrationResult = {

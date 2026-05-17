@@ -3,6 +3,7 @@ import type {
   GameDataObject,
   GameDataRoom,
 } from "../llm/types";
+import type { EngineCommandResponse } from "../engine/types";
 import type { TurnRecord } from "../wiki/schema";
 
 let gameDataPromise: Promise<GameData> | null = null;
@@ -43,6 +44,16 @@ export function getRoom(gameData: GameData, roomId: string) {
   return gameData.rooms[roomId] ?? gameData.rooms["WEST-OF-HOUSE"];
 }
 
+export function detectRoomIdFromEngineResponse(
+  response: Pick<EngineCommandResponse, "text" | "rawUpdate">,
+  gameData: GameData,
+) {
+  return (
+    detectRoomIdFromStatusWindow(response.rawUpdate, gameData) ??
+    detectRoomIdFromOutput(response.text, gameData)
+  );
+}
+
 export function detectRoomIdFromOutput(text: string, gameData: GameData) {
   const roomNameToId = new Map(
     Object.entries(gameData.rooms).map(([roomId, room]) => [
@@ -54,6 +65,24 @@ export function detectRoomIdFromOutput(text: string, gameData: GameData) {
   for (const rawLine of text.split(/\r?\n/)) {
     const line = normalizeRoomTitle(rawLine);
     const roomId = roomNameToId.get(line);
+    if (roomId) {
+      return roomId;
+    }
+  }
+
+  return null;
+}
+
+function detectRoomIdFromStatusWindow(rawUpdate: unknown, gameData: GameData) {
+  const roomNameToId = new Map(
+    Object.entries(gameData.rooms).map(([roomId, room]) => [
+      normalizeRoomTitle(room.name),
+      roomId,
+    ]),
+  );
+
+  for (const statusLine of readStatusLines(rawUpdate)) {
+    const roomId = roomNameToId.get(normalizeStatusRoomTitle(statusLine));
     if (roomId) {
       return roomId;
     }
@@ -200,6 +229,14 @@ function normalizeRoomTitle(value: string) {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+function normalizeStatusRoomTitle(value: string) {
+  return normalizeRoomTitle(
+    value
+      .replace(/\s+(Score|Moves|Time):.*$/i, "")
+      .replace(/\s{2,}.*/, ""),
+  );
+}
+
 function normalizeObjectPhrase(value: string) {
   return value
     .toLowerCase()
@@ -207,4 +244,36 @@ function normalizeObjectPhrase(value: string) {
     .replace(/-/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function readStatusLines(rawUpdate: unknown) {
+  if (!isRecord(rawUpdate) || !Array.isArray(rawUpdate.content)) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (const content of rawUpdate.content) {
+    if (!isRecord(content) || !Array.isArray(content.lines)) {
+      continue;
+    }
+
+    for (const line of content.lines) {
+      if (!isRecord(line) || !Array.isArray(line.content)) {
+        continue;
+      }
+
+      const text = line.content
+        .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
+        .join("");
+      if (text.trim()) {
+        lines.push(text);
+      }
+    }
+  }
+
+  return lines;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

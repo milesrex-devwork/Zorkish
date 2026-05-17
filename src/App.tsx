@@ -3,7 +3,7 @@ import { GameDataDebugView } from "./components/GameDataDebugView";
 import { WikiDebugView } from "./components/WikiDebugView";
 import {
   applyInventoryGuess,
-  detectRoomIdFromOutput,
+  detectRoomIdFromEngineResponse,
   getRoom,
   getVisibleObjectIds,
   loadGameData,
@@ -125,7 +125,7 @@ export default function App() {
 
         const gameData = await loadGameData();
         const detectedRoomId =
-          detectRoomIdFromOutput(response.text, gameData) ?? START_ROOM_ID;
+          detectRoomIdFromEngineResponse(response, gameData) ?? START_ROOM_ID;
         currentRoomIdRef.current = detectedRoomId;
         mostRecentEngineResponseRef.current = response.text;
 
@@ -248,15 +248,16 @@ export default function App() {
 
     for (const command of commands) {
       const response = await engine.sendCommand(command);
-      responses.push({
-        command,
-        text: response.text,
-      });
-
-      const detectedRoomId = detectRoomIdFromOutput(response.text, gameData);
+      const detectedRoomId = detectRoomIdFromEngineResponse(response, gameData);
       if (detectedRoomId) {
         currentRoomIdRef.current = detectedRoomId;
       }
+      responses.push({
+        command,
+        text: response.text,
+        detected_room_id: detectedRoomId,
+        current_room_id_after_command: currentRoomIdRef.current,
+      });
       inventoryRef.current = applyInventoryGuess(
         command,
         response.text,
@@ -302,6 +303,8 @@ export default function App() {
       engineResponses: input.engineResponses.map((response) => ({
         command: response.command,
         text: response.text,
+        detected_room_id: response.detected_room_id,
+        current_room_id_after_command: response.current_room_id_after_command,
       })),
       narration: {
         text: input.narration.text,
