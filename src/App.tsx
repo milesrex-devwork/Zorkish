@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { WikiDebugView } from "./components/WikiDebugView";
 import { ZMachineEngineClient } from "./engine/engine-client";
 import { initWiki } from "./wiki/access";
 
@@ -45,7 +46,7 @@ export default function App() {
 
     return () => {
       isMounted = false;
-      };
+    };
   }, []);
 
   useEffect(() => {
@@ -189,6 +190,7 @@ export default function App() {
             </button>
           </form>
         </section>
+        {import.meta.env.DEV ? <WikiDebugView /> : null}
       </div>
     </main>
   );
