@@ -16,3 +16,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 The browser app calls `http://localhost:8000/api/llm` during development.
 
+## Model IDs
+
+Use exact IDs from `GET https://inference-api.nvidia.com/v1/models` for model
+swaps. Catalog display names can differ from API IDs, and `nvcf/` vs.
+`nvidia/` prefixes may route to different deployments.

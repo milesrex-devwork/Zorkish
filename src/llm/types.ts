@@ -1,3 +1,5 @@
+import type { LlmTiming } from "./client";
+
 export const INTENT_VALUES = [
   "action",
   "undo",
@@ -37,8 +39,9 @@ export type IntentMappingResult = {
 };
 
 export type IntentMappingDebugResult = {
-  model: string;
+  model_used: string;
   latency_ms: number;
+  proxy_timing: LlmTiming | null;
   context_room_id: string;
   mapping: IntentMappingResult;
 };
