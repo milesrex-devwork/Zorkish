@@ -7,6 +7,7 @@ import {
   type RuntimeContext,
 } from "../game/game-data";
 import { requestChatCompletion, type LlmTiming } from "./client";
+import { INTENT_MODEL } from "./models";
 import modernizedClassicVoice from "./prompts/voice-modernized-classic.yaml?raw";
 import {
   INTENT_VALUES,
@@ -15,8 +16,6 @@ import {
   type IntentMappingResult,
   type IntentValue,
 } from "./types";
-
-export const INTENT_MODEL = "aws/anthropic/bedrock-claude-sonnet-4-6";
 
 const RECALL_TOPICS = [
   "inventory",

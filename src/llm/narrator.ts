@@ -6,11 +6,9 @@ import {
   type RuntimeContext,
 } from "../game/game-data";
 import { streamChatCompletion, type LlmTiming } from "./client";
-import { INTENT_MODEL } from "./intent-mapper";
+import { NARRATION_MODEL } from "./models";
 import modernizedClassicVoice from "./prompts/voice-modernized-classic.yaml?raw";
 import type { IntentMappingDebugResult } from "./types";
-
-export const NARRATION_MODEL = INTENT_MODEL;
 
 export type ExecutedEngineResponse = {
   command: string;

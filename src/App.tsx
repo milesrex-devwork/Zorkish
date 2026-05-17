@@ -263,6 +263,7 @@ export default function App() {
         response.text,
         inventoryRef.current,
         gameData,
+        currentRoomIdRef.current,
       );
       mostRecentEngineResponseRef.current = response.text;
       previousActionWasFatalRef.current = response.text

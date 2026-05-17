@@ -133,8 +133,12 @@ export function applyInventoryGuess(
   responseText: string,
   inventory: string[],
   gameData: GameData,
+  roomId?: string,
 ) {
-  const objectId = findObjectIdInCommand(command, gameData);
+  const preferredObjectIds = roomId
+    ? getVisibleObjectIds(gameData, roomId, inventory)
+    : inventory;
+  const objectId = findObjectIdInCommand(command, gameData, preferredObjectIds);
   if (!objectId) {
     return inventory;
   }
@@ -196,9 +200,34 @@ function objectToContext(
   };
 }
 
-function findObjectIdInCommand(command: string, gameData: GameData) {
+function findObjectIdInCommand(
+  command: string,
+  gameData: GameData,
+  preferredObjectIds: string[],
+) {
   const normalizedCommand = normalizeObjectPhrase(command);
-  const candidates = Object.entries(gameData.objects)
+  const preferredMatch = findObjectIdInCandidates(
+    normalizedCommand,
+    preferredObjectIds
+      .map((objectId) => [objectId, gameData.objects[objectId]] as const)
+      .filter((entry): entry is readonly [string, GameDataObject] => entry[1] !== undefined),
+  );
+
+  if (preferredMatch) {
+    return preferredMatch;
+  }
+
+  return findObjectIdInCandidates(
+    normalizedCommand,
+    Object.entries(gameData.objects),
+  );
+}
+
+function findObjectIdInCandidates(
+  normalizedCommand: string,
+  objects: ReadonlyArray<readonly [string, GameDataObject]>,
+) {
+  const candidates = objects
     .flatMap(([objectId, object]) =>
       getObjectTerms(objectId, object).map((term) => ({ objectId, term })),
     )
