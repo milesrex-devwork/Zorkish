@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { GameDataDebugView } from "./components/GameDataDebugView";
 import { WikiDebugView } from "./components/WikiDebugView";
 import { ZMachineEngineClient } from "./engine/engine-client";
+import { mapPlayerInputToIntent } from "./llm/intent-mapper";
 import { initWiki } from "./wiki/access";
 
 let hasLoggedWikiInitialization = false;
@@ -104,21 +105,20 @@ export default function App() {
       return;
     }
 
-    const engine = engineRef.current;
-    if (!engine) {
-      return;
-    }
-
     setInput("");
     setIsRunning(true);
     appendEntry("player", `> ${command}`);
 
     try {
-      const response = await engine.sendCommand(command);
-      appendEntry("engine", response.text);
+      const intentMapping = await mapPlayerInputToIntent(command);
+      console.log("Zorkish intent mapping", intentMapping);
+      appendEntry(
+        "system",
+        `Intent mapped as ${intentMapping.mapping.intent}. Structured JSON logged to the console. Engine state was not advanced.`,
+      );
     } catch (error) {
-      console.error("Z-machine command failed", error);
-      appendEntry("system", "The dungeon flickers. The command did not land.");
+      console.error("Intent mapping failed", error);
+      appendEntry("system", "The intent mapper did not answer. Check the proxy and console.");
     } finally {
       setIsRunning(false);
     }
@@ -140,7 +140,7 @@ export default function App() {
       <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-6 py-5">
         <header className="border-b border-amber-200/15 pb-4">
           <h1 className="text-xl font-semibold tracking-normal text-amber-100">
-            Zorkish v0.02
+            Zorkish v0.04
           </h1>
         </header>
         <section
