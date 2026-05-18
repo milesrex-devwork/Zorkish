@@ -39,3 +39,11 @@
   the first submitted command to create a new run, preventing zero-turn refresh
   artifacts. A second tab resumes the same IndexedDB run; conflict handling is
   v1 work.
+
+## V1 Follow-ups
+
+- Replace command-history replay saves with true Quetzal save/restore once the
+  engine wrapper exposes it, or switch to a wrapper that does. Replay-backed
+  saves are acceptable for v0.5 because Zork I replay is effectively
+  deterministic for single-player use, but long runs will get slower to restore
+  and thief scheduling should be watched for replay divergence.
