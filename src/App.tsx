@@ -10,10 +10,13 @@ import { GameDataDebugView } from "./components/GameDataDebugView";
 import { WikiDebugView } from "./components/WikiDebugView";
 import {
   applyInventoryGuess,
+  applyContainerStateGuess,
   detectRoomIdFromEngineResponse,
+  getInitialContainerStates,
   getRoom,
   getVisibleObjectIds,
   loadGameData,
+  type ContainerStateMap,
   type RuntimeContext,
 } from "./game/game-data";
 import { ZMachineEngineClient } from "./engine/engine-client";
@@ -68,6 +71,7 @@ type UndoSnapshot = {
   commandHistory: string[];
   roomId: string;
   inventory: string[];
+  containerStates: ContainerStateMap;
   previousActionWasFatal: boolean;
   mostRecentEngineResponse: string | null;
   label: string;
@@ -94,6 +98,7 @@ export default function App() {
   const commandInputRef = useRef<HTMLInputElement | null>(null);
   const currentRoomIdRef = useRef(START_ROOM_ID);
   const inventoryRef = useRef<string[]>([]);
+  const containerStatesRef = useRef<ContainerStateMap>({});
   const previousActionWasFatalRef = useRef(false);
   const mostRecentEngineResponseRef = useRef<string | null>(null);
   const committedEngineCommandsRef = useRef<string[]>([]);
@@ -145,6 +150,7 @@ export default function App() {
       turnNumberRef.current = 1;
       committedEngineCommandsRef.current = [];
       lastUndoSnapshotRef.current = null;
+      containerStatesRef.current = getInitialContainerStates(await loadGameData());
       queuedCommandsRef.current = [];
       setQueuedCommands([]);
       setDeathPrompt(null);
@@ -383,6 +389,14 @@ export default function App() {
         command,
       ];
       if (!isDeath) {
+        containerStatesRef.current = applyContainerStateGuess(
+          command,
+          response.text,
+          containerStatesRef.current,
+          gameData,
+          currentRoomIdRef.current,
+          inventoryRef.current,
+        );
         inventoryRef.current = applyInventoryGuess(
           command,
           response.text,
@@ -695,6 +709,7 @@ export default function App() {
       gameData,
       currentRoomIdRef.current,
       inventoryRef.current,
+      containerStatesRef.current,
     );
     const visibleNpcs = visibleObjectIds.filter(
       (objectId) => gameData.objects[objectId]?.is_npc,
@@ -735,6 +750,7 @@ export default function App() {
       commandHistory: [...committedEngineCommandsRef.current],
       roomId: currentRoomIdRef.current,
       inventory: [...inventoryRef.current],
+      containerStates: { ...containerStatesRef.current },
       previousActionWasFatal: previousActionWasFatalRef.current,
       mostRecentEngineResponse: mostRecentEngineResponseRef.current,
       label,
@@ -754,6 +770,7 @@ export default function App() {
     committedEngineCommandsRef.current = [...snapshot.commandHistory];
     currentRoomIdRef.current = snapshot.roomId;
     inventoryRef.current = [...snapshot.inventory];
+    containerStatesRef.current = { ...snapshot.containerStates };
     previousActionWasFatalRef.current = snapshot.previousActionWasFatal;
     mostRecentEngineResponseRef.current = snapshot.mostRecentEngineResponse;
   }
@@ -893,6 +910,7 @@ export default function App() {
     return {
       currentRoomId: currentRoomIdRef.current,
       inventory: inventoryRef.current,
+      containerStates: containerStatesRef.current,
       livesRemaining: runRef.current?.lives_remaining ?? 3,
       previousActionWasFatal: previousActionWasFatalRef.current,
       mostRecentEngineResponse: mostRecentEngineResponseRef.current,

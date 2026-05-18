@@ -12,6 +12,11 @@
   mentioned before the rug has been moved. A likely mitigation is to label
   covered, hidden, or obscured objects in context and instruct narration not to
   mention them until the engine reveals them.
+- Track hidden-object omniscience leaks from container contents. The static room
+  slice can list objects physically inside closed containers, such as `LUNCH`
+  and `GARLIC` inside the closed `SANDWICH-BAG`. v0.5 polish now filters
+  visibility by containment and simple runtime open/closed state, but this
+  should receive broader validation for nested containers and parser messages.
 - Intent mapping now uses exact API model ID
   `nvidia/qwen/qwen3-next-80b-a3b-instruct`; narration remains on
   `aws/anthropic/bedrock-claude-sonnet-4-6` for voice quality.

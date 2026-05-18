@@ -63,6 +63,7 @@ export type GameDataObject = {
   is_npc: boolean;
   synonyms?: string[];
   adjectives?: string[];
+  flags?: string[];
 };
 
 export type GameData = {
