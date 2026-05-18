@@ -1,4 +1,11 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { GameDataDebugView } from "./components/GameDataDebugView";
 import { WikiDebugView } from "./components/WikiDebugView";
 import {
@@ -84,12 +91,16 @@ export default function App() {
   const engineRef = useRef<ZMachineEngineClient | null>(null);
   const nextEntryId = useRef(1);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const commandInputRef = useRef<HTMLInputElement | null>(null);
   const currentRoomIdRef = useRef(START_ROOM_ID);
   const inventoryRef = useRef<string[]>([]);
   const previousActionWasFatalRef = useRef(false);
   const mostRecentEngineResponseRef = useRef<string | null>(null);
   const committedEngineCommandsRef = useRef<string[]>([]);
   const lastUndoSnapshotRef = useRef<UndoSnapshot | null>(null);
+  const queuedCommandsRef = useRef<string[]>([]);
+  const isProcessingCommandRef = useRef(false);
+  const scrollbarFadeTimeoutRef = useRef<number | null>(null);
   const activeObservationsRef = useRef<string[]>([]);
   const recentTurnsRef = useRef<TurnRecord[]>([]);
   const runRef = useRef<RunRecord | null>(null);
@@ -102,6 +113,8 @@ export default function App() {
   const [statusText, setStatusText] = useState("Starting engine...");
   const [deathPrompt, setDeathPrompt] = useState<DeathPromptState | null>(null);
   const [terminalMessage, setTerminalMessage] = useState<string | null>(null);
+  const [queuedCommands, setQueuedCommands] = useState<string[]>([]);
+  const [isTranscriptScrolling, setIsTranscriptScrolling] = useState(false);
   const [entries, setEntries] = useState<TerminalEntry[]>([
     {
       id: 0,
@@ -132,6 +145,8 @@ export default function App() {
       turnNumberRef.current = 1;
       committedEngineCommandsRef.current = [];
       lastUndoSnapshotRef.current = null;
+      queuedCommandsRef.current = [];
+      setQueuedCommands([]);
       setDeathPrompt(null);
       setTerminalMessage(null);
       recentTurnsRef.current = await getRecentTurns(run.run_id, 10);
@@ -195,30 +210,67 @@ export default function App() {
   useEffect(() => {
     transcriptRef.current?.scrollTo({
       top: transcriptRef.current.scrollHeight,
-      behavior: "smooth",
+      behavior: isRunning ? "auto" : "smooth",
     });
-  }, [entries]);
+  }, [deathPrompt, entries, isRunning, queuedCommands, terminalMessage]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (!isReady || terminalMessage) {
+      return;
+    }
+
+    const animationFrameId = requestAnimationFrame(() => {
+      commandInputRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [deathPrompt, isReady, isRunning, terminalMessage]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollbarFadeTimeoutRef.current !== null) {
+        window.clearTimeout(scrollbarFadeTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const formData = new FormData(event.currentTarget);
     const playerInput = String(formData.get("command") ?? "").trim();
-    const engine = engineRef.current;
-    if (!playerInput || !engine || !isReady || isRunning || terminalMessage) {
+    if (!playerInput || !engineRef.current || !isReady || terminalMessage) {
       return;
     }
 
     setInput("");
+    focusCommandInput();
+
+    if (isProcessingCommandRef.current) {
+      enqueueCommand(playerInput);
+      return;
+    }
+
+    void processCommand(playerInput);
+  }
+
+  async function processCommand(playerInput: string) {
+    const engine = engineRef.current;
+    if (!engine || !isReady || terminalMessage) {
+      return;
+    }
+
+    isProcessingCommandRef.current = true;
     setIsRunning(true);
     appendEntry("player", `> ${playerInput}`);
     const narrationEntryId = appendEntry("narration", "");
     const turnNumber = turnNumberRef.current;
     const runtimeBeforeIntent = buildRuntimeContext();
+    let shouldProcessQueuedCommand = true;
 
     try {
       if (deathPrompt) {
-        await handleDeathPromptSubmit({
+        shouldProcessQueuedCommand = await handleDeathPromptSubmit({
           playerInput,
           narrationEntryId,
           prompt: deathPrompt,
@@ -273,6 +325,10 @@ export default function App() {
       });
       turnNumberRef.current += 1;
       await handlePostCommitDeath(commitResult);
+      if (commitResult.death) {
+        shouldProcessQueuedCommand = false;
+        clearQueuedCommands();
+      }
       updateStatusFromCurrentRoom();
     } catch (error) {
       console.error("Checkpoint 5 turn failed", error);
@@ -281,7 +337,12 @@ export default function App() {
         "Something in the machinery failed to answer. Check the proxy and console, then try again.",
       );
     } finally {
+      isProcessingCommandRef.current = false;
       setIsRunning(false);
+      focusCommandInput();
+      if (shouldProcessQueuedCommand) {
+        processNextQueuedCommand();
+      }
     }
   }
 
@@ -371,23 +432,22 @@ export default function App() {
     prompt: DeathPromptState;
     runtimeBeforeIntent: RuntimeContext;
     turnNumber: number;
-  }) {
+  }): Promise<boolean> {
     const normalized = input.playerInput.trim().toLowerCase();
 
     if (["y", "yes", "undo", "u"].includes(normalized)) {
-      await handleDeathUndo(input);
-      return;
+      return handleDeathUndo(input);
     }
 
     if (["n", "no", "quit", "q"].includes(normalized)) {
-      await handleDeathDecline(input);
-      return;
+      return handleDeathDecline(input);
     }
 
     replaceEntryText(
       input.narrationEntryId,
       "Answer Y to spend a life and undo, or N to let the run end.",
     );
+    return false;
   }
 
   async function handleDeathUndo(input: {
@@ -396,12 +456,12 @@ export default function App() {
     prompt: DeathPromptState;
     runtimeBeforeIntent: RuntimeContext;
     turnNumber: number;
-  }) {
+  }): Promise<boolean> {
     const run = runRef.current;
 
     if (!run) {
       replaceEntryText(input.narrationEntryId, "The run record is missing.");
-      return;
+      return false;
     }
 
     const result = await markDeathUndoneAndSpendLife({
@@ -417,7 +477,8 @@ export default function App() {
       );
       setDeathPrompt(null);
       setTerminalMessage("Out of lives. The run has ended.");
-      return;
+      clearQueuedCommands();
+      return false;
     }
 
     runRef.current = result.run;
@@ -465,6 +526,7 @@ export default function App() {
     });
     turnNumberRef.current += 1;
     updateStatusFromCurrentRoom();
+    return true;
   }
 
   async function handleDeathDecline(input: {
@@ -472,7 +534,7 @@ export default function App() {
     narrationEntryId: number;
     runtimeBeforeIntent: RuntimeContext;
     turnNumber: number;
-  }) {
+  }): Promise<boolean> {
     const intentMapping = createLocalIntentMapping(
       input.playerInput,
       "action",
@@ -508,7 +570,9 @@ export default function App() {
     await endCurrentRun("death", "Player declined death undo.");
     setDeathPrompt(null);
     setTerminalMessage("Run ended. The death stands.");
+    clearQueuedCommands();
     updateStatusFromCurrentRoom();
+    return false;
   }
 
   async function commitTurn(input: {
@@ -883,6 +947,60 @@ export default function App() {
     );
   }
 
+  function enqueueCommand(command: string) {
+    queuedCommandsRef.current = [...queuedCommandsRef.current, command];
+    setQueuedCommands(queuedCommandsRef.current);
+  }
+
+  function processNextQueuedCommand() {
+    const [nextCommand, ...remainingCommands] = queuedCommandsRef.current;
+    if (!nextCommand) {
+      return;
+    }
+
+    queuedCommandsRef.current = remainingCommands;
+    setQueuedCommands(remainingCommands);
+    window.setTimeout(() => void processCommand(nextCommand), 0);
+  }
+
+  function clearQueuedCommands() {
+    queuedCommandsRef.current = [];
+    setQueuedCommands([]);
+  }
+
+  function focusCommandInput() {
+    requestAnimationFrame(() => {
+      commandInputRef.current?.focus({ preventScroll: true });
+    });
+  }
+
+  function handleTranscriptScroll() {
+    setIsTranscriptScrolling(true);
+
+    if (scrollbarFadeTimeoutRef.current !== null) {
+      window.clearTimeout(scrollbarFadeTimeoutRef.current);
+    }
+
+    scrollbarFadeTimeoutRef.current = window.setTimeout(() => {
+      setIsTranscriptScrolling(false);
+      scrollbarFadeTimeoutRef.current = null;
+    }, 900);
+  }
+
+  function handleTranscriptPointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      target.closest("button,input,textarea,select,summary,a")
+    ) {
+      return;
+    }
+
+    focusCommandInput();
+  }
+
   function logTurnTiming(input: {
     turnNumber: number;
     playerInput: string;
@@ -926,8 +1044,12 @@ export default function App() {
           className="flex min-h-0 flex-1 flex-col py-8"
         >
           <div
+            className={`terminal-scrollbar min-h-0 flex-1 overflow-y-auto border border-amber-100/10 bg-black p-5 font-mono text-sm leading-6 shadow-2xl shadow-black/30 ${
+              isTranscriptScrolling ? "terminal-scrollbar-active" : ""
+            }`}
+            onPointerDown={handleTranscriptPointerDown}
+            onScroll={handleTranscriptScroll}
             ref={transcriptRef}
-            className="min-h-0 flex-1 overflow-y-auto border border-amber-100/10 bg-stone-900/70 p-5 font-mono text-sm leading-6 shadow-2xl shadow-black/30"
           >
             {wikiError ? (
               <p className="mb-4 text-amber-100" role="alert">
@@ -949,51 +1071,62 @@ export default function App() {
                 {entry.text || (entry.kind === "narration" ? "..." : "")}
               </pre>
             ))}
+            {deathPrompt ? (
+              <pre
+                className="mb-5 whitespace-pre-wrap text-red-100"
+                role="alert"
+              >
+                {`Death recorded: ${deathPrompt.deathType} in ${deathPrompt.locationId}. Lives available: ${deathPrompt.livesRemaining}. Undo? Y/N`}
+              </pre>
+            ) : null}
+            {terminalMessage ? (
+              <pre
+                className="mb-5 whitespace-pre-wrap text-amber-100"
+                role="status"
+              >
+                {terminalMessage}
+              </pre>
+            ) : null}
+            {queuedCommands.length ? (
+              <pre className="mb-3 whitespace-pre-wrap text-stone-500">
+                {queuedCommands
+                  .map((queuedCommand) => `queued> ${queuedCommand}`)
+                  .join("\n")}
+              </pre>
+            ) : null}
+            <form
+              className="flex items-baseline text-stone-100"
+              onSubmit={handleSubmit}
+            >
+              <span className="shrink-0 text-amber-100" aria-hidden="true">
+                &gt;
+              </span>
+              <input
+                aria-label="Zork command"
+                autoComplete="off"
+                className="terminal-command-input ml-1 min-w-0 flex-1 bg-transparent p-0 text-stone-100 outline-none"
+                disabled={!isReady || Boolean(terminalMessage)}
+                name="command"
+                onChange={(event) => setInput(event.target.value)}
+                placeholder={
+                  deathPrompt
+                    ? "Y/N"
+                    : isReady
+                      ? ""
+                      : "starting engine..."
+                }
+                ref={commandInputRef}
+                value={input}
+              />
+              <button
+                className="sr-only"
+                disabled={!isReady || !input.trim() || Boolean(terminalMessage)}
+                type="submit"
+              >
+                Send
+              </button>
+            </form>
           </div>
-          {deathPrompt ? (
-            <div
-              className="mt-4 border border-red-300/30 bg-red-950/30 px-4 py-3 font-mono text-sm text-red-100"
-              role="alert"
-            >
-              Death recorded: {deathPrompt.deathType} in {deathPrompt.locationId}.
-              Lives available: {deathPrompt.livesRemaining}. Undo? Y/N
-            </div>
-          ) : null}
-          {terminalMessage ? (
-            <div
-              className="mt-4 border border-amber-200/20 bg-stone-900 px-4 py-3 font-mono text-sm text-amber-100"
-              role="status"
-            >
-              {terminalMessage}
-            </div>
-          ) : null}
-          <form className="mt-4 flex shrink-0 gap-3" onSubmit={handleSubmit}>
-            <input
-              aria-label="Zork command"
-              autoComplete="off"
-              className="min-w-0 flex-1 border border-amber-100/15 bg-stone-900 px-4 py-3 font-mono text-sm text-stone-100 outline-none transition focus:border-amber-200/60"
-              disabled={!isReady || isRunning || Boolean(terminalMessage)}
-              name="command"
-              onChange={(event) => setInput(event.target.value)}
-              placeholder={
-                deathPrompt
-                  ? "Y to spend a life, N to end the run"
-                  : isReady
-                    ? "Say what you want to do..."
-                    : "Starting engine..."
-              }
-              value={input}
-            />
-            <button
-              className="border border-amber-100/20 px-5 py-3 text-sm font-medium text-amber-100 transition hover:border-amber-100/50 disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={
-                !isReady || isRunning || !input.trim() || Boolean(terminalMessage)
-              }
-              type="submit"
-            >
-              {deathPrompt ? "Answer" : "Send"}
-            </button>
-          </form>
         </section>
         {import.meta.env.DEV ? (
           <div className="max-h-64 overflow-y-auto border-t border-amber-100/10">
