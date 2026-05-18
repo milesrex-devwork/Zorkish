@@ -32,3 +32,10 @@
   the death banner. Zorkish treats the engine death as terminal until the
   overlay prompt resolves, preserving the actual death location for narration,
   the Wiki death record, and undo.
+- Run resumption is implemented with replay-backed save blobs in the existing
+  `saves` store because the current Bocfel/Emglken wrapper does not expose a
+  true Quetzal save/restore API. On load, the app resumes the most-recent
+  non-ended gameplay run with at least one turn; if none exists, it waits until
+  the first submitted command to create a new run, preventing zero-turn refresh
+  artifacts. A second tab resumes the same IndexedDB run; conflict handling is
+  v1 work.

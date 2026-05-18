@@ -31,20 +31,31 @@ import {
   createRun,
   endRun,
   getActiveObservations,
+  getLatestSaveForRun,
+  getMostRecentResumableRun,
   getRun,
   getOrCreatePlayer,
   getRecentTurns,
+  getTurnsForRun,
   markDeathUndoneAndSpendLife,
   mergeTurnOutcome,
   recordDeath,
   recordObservation,
+  recordSave,
   recordTurn,
   updateRunDiscovery,
 } from "./wiki/access";
-import type { DeathRecord, RunRecord, TurnRecord } from "./wiki/schema";
+import type {
+  DeathRecord,
+  RunRecord,
+  SaveRecord,
+  TurnRecord,
+} from "./wiki/schema";
 
 const GAMEPLAY_PLAYER_ID = "local-player";
 const START_ROOM_ID = "WEST-OF-HOUSE";
+const SCROLLBACK_TURN_LIMIT = 12;
+const REPLAY_SAVE_FORMAT = "zorkish-command-history-v1";
 
 let hasLoggedWikiInitialization = false;
 
@@ -83,6 +94,18 @@ type DeathPromptState = {
   locationId: string;
   livesRemaining: number;
   snapshot: UndoSnapshot;
+};
+
+type ReplaySavePayload = {
+  format: typeof REPLAY_SAVE_FORMAT;
+  source: "command-history-replay";
+  commands: string[];
+  roomId: string;
+  inventory: string[];
+  containerStates: ContainerStateMap;
+  previousActionWasFatal: boolean;
+  mostRecentEngineResponse: string | null;
+  savedAt: number;
 };
 
 declare global {
@@ -128,7 +151,50 @@ export default function App() {
     },
   ]);
 
-  const prepareGameplayRun = useCallback(async (initialRoomId: string) => {
+  const restoreEngineSnapshot = useCallback(async (snapshot: UndoSnapshot) => {
+    const gameData = await loadGameData();
+    const restoredEngine = new ZMachineEngineClient();
+    const initResponse = await restoredEngine.init();
+    let actualRoomId =
+      detectRoomIdFromEngineResponse(initResponse, gameData) ?? START_ROOM_ID;
+    let lastResponseText = initResponse.text;
+
+    for (const command of snapshot.commandHistory) {
+      const response = await restoredEngine.sendCommand(command);
+      const detectedRoomId = detectRoomIdFromEngineResponse(response, gameData);
+      if (detectedRoomId) {
+        actualRoomId = detectedRoomId;
+      }
+      lastResponseText = response.text;
+    }
+
+    engineRef.current?.dispose();
+    engineRef.current = restoredEngine;
+    committedEngineCommandsRef.current = [...snapshot.commandHistory];
+    currentRoomIdRef.current = actualRoomId;
+    inventoryRef.current = [...snapshot.inventory];
+    containerStatesRef.current = { ...snapshot.containerStates };
+    previousActionWasFatalRef.current = snapshot.previousActionWasFatal;
+    mostRecentEngineResponseRef.current =
+      snapshot.mostRecentEngineResponse ?? lastResponseText;
+
+    if (actualRoomId !== snapshot.roomId) {
+      console.warn("Zorkish replay restored a different room than expected", {
+        expected_room_id: snapshot.roomId,
+        actual_room_id: actualRoomId,
+        replay_command_count: snapshot.commandHistory.length,
+        replay_tail: snapshot.commandHistory.slice(-5),
+      });
+    }
+
+    return {
+      expectedRoomId: snapshot.roomId,
+      actualRoomId,
+      commandHistory: [...snapshot.commandHistory],
+    };
+  }, []);
+
+  const createNewGameplayRun = useCallback(async (initialRoomId: string) => {
     try {
       const player = await getOrCreatePlayer({
         playerId: GAMEPLAY_PLAYER_ID,
@@ -143,27 +209,144 @@ export default function App() {
         playerId: player.player_id,
         livesInitial: 3,
         currentRoom: initialRoomId,
-        inventory: [],
-        engineSaveId: "checkpoint5-session-start",
+        inventory: inventoryRef.current,
+        engineSaveId: "pending-first-turn",
       });
       runRef.current = run;
       turnNumberRef.current = 1;
-      committedEngineCommandsRef.current = [];
       lastUndoSnapshotRef.current = null;
-      containerStatesRef.current = getInitialContainerStates(await loadGameData());
       queuedCommandsRef.current = [];
       setQueuedCommands([]);
       setDeathPrompt(null);
       setTerminalMessage(null);
-      recentTurnsRef.current = await getRecentTurns(run.run_id, 10);
+      recentTurnsRef.current = [];
       activeObservationsRef.current = (
         await getActiveObservations(run.run_id)
       ).map((observation) => observation.text);
+      console.log("Zorkish created gameplay run", {
+        run_id: run.run_id,
+        room_id: initialRoomId,
+      });
+
+      return run;
     } catch (error) {
       console.error("Wiki gameplay run setup failed", error);
       setWikiError(true);
+      return null;
     }
   }, []);
+
+  const prepareGameplaySession = useCallback(
+    async (input: { initialRoomId: string; initialEngineText: string }) => {
+      const gameData = await loadGameData();
+      const initialContainerStates = getInitialContainerStates(gameData);
+
+      currentRoomIdRef.current = input.initialRoomId;
+      inventoryRef.current = [];
+      containerStatesRef.current = initialContainerStates;
+      previousActionWasFatalRef.current = false;
+      mostRecentEngineResponseRef.current = input.initialEngineText;
+      committedEngineCommandsRef.current = [];
+      lastUndoSnapshotRef.current = null;
+      queuedCommandsRef.current = [];
+      setQueuedCommands([]);
+      setDeathPrompt(null);
+      setTerminalMessage(null);
+
+      try {
+        const player = await getOrCreatePlayer({
+          playerId: GAMEPLAY_PLAYER_ID,
+          playerProfile: "Zorkish local browser player",
+        });
+        if (!hasLoggedWikiInitialization) {
+          console.log("IndexedDB initialized");
+          hasLoggedWikiInitialization = true;
+        }
+
+        const resumableRun = await getMostRecentResumableRun(player.player_id);
+        if (resumableRun) {
+          const [latestSave, recentTurns, observations] = await Promise.all([
+            getLatestSaveForRun(resumableRun.run_id),
+            getRecentTurns(resumableRun.run_id, SCROLLBACK_TURN_LIMIT),
+            getActiveObservations(resumableRun.run_id),
+          ]);
+          const replayPayload =
+            (await readReplaySavePayload(latestSave)) ??
+            (await buildReplaySavePayloadFromTurns(resumableRun));
+
+          if (replayPayload) {
+            const snapshot: UndoSnapshot = {
+              commandHistory: replayPayload.commands,
+              roomId: resumableRun.current_state.current_room,
+              inventory:
+                resumableRun.current_state.inventory.length > 0
+                  ? resumableRun.current_state.inventory
+                  : replayPayload.inventory,
+              containerStates:
+                Object.keys(replayPayload.containerStates).length > 0
+                  ? replayPayload.containerStates
+                  : initialContainerStates,
+              previousActionWasFatal: replayPayload.previousActionWasFatal,
+              mostRecentEngineResponse: replayPayload.mostRecentEngineResponse,
+              label: `resume run ${resumableRun.run_id}`,
+            };
+            const restoreResult = await restoreEngineSnapshot(snapshot);
+            const refreshedRun =
+              (await getRun(resumableRun.run_id)) ?? resumableRun;
+
+            runRef.current = refreshedRun;
+            turnNumberRef.current = refreshedRun.stats.turn_count + 1;
+            recentTurnsRef.current = recentTurns;
+            activeObservationsRef.current = observations.map(
+              (observation) => observation.text,
+            );
+            setEntries(
+              createScrollbackEntries(recentTurns, () => nextEntryId.current++),
+            );
+            setStatusText(
+              formatStatusText(
+                gameData,
+                currentRoomIdRef.current,
+                inventoryRef.current,
+                refreshedRun,
+              ),
+            );
+            console.log("Zorkish resumed gameplay run", {
+              run_id: refreshedRun.run_id,
+              next_turn_number: turnNumberRef.current,
+              replay_command_count: replayPayload.commands.length,
+              restored_room_id: restoreResult.actualRoomId,
+              save_id: latestSave?.save_id ?? "turn-history-fallback",
+            });
+            return;
+          }
+
+          console.warn("Zorkish found a resumable run with no replayable save", {
+            run_id: resumableRun.run_id,
+            turn_count: resumableRun.stats.turn_count,
+          });
+        }
+      } catch (error) {
+        console.error("Wiki resume lookup failed", error);
+        setWikiError(true);
+      }
+
+      runRef.current = null;
+      turnNumberRef.current = 1;
+      recentTurnsRef.current = [];
+      activeObservationsRef.current = [];
+      setEntries([
+        {
+          id: nextEntryId.current++,
+          kind: "engine",
+          text: input.initialEngineText,
+        },
+      ]);
+      setStatusText(formatStatusText(gameData, input.initialRoomId, [], null));
+      console.log("Zorkish ready for a new run on first command");
+    },
+    [restoreEngineSnapshot],
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -180,15 +363,12 @@ export default function App() {
         const gameData = await loadGameData();
         const detectedRoomId =
           detectRoomIdFromEngineResponse(response, gameData) ?? START_ROOM_ID;
-        currentRoomIdRef.current = detectedRoomId;
-        mostRecentEngineResponseRef.current = response.text;
-
-        setEntries([{ id: nextEntryId.current++, kind: "engine", text: response.text }]);
-        setStatusText(`Room: ${getRoom(gameData, detectedRoomId)?.name ?? detectedRoomId}`);
+        await prepareGameplaySession({
+          initialRoomId: detectedRoomId,
+          initialEngineText: response.text,
+        });
         setIsReady(true);
         setIsRunning(false);
-
-        await prepareGameplayRun(detectedRoomId);
       })
       .catch((error: unknown) => {
         if (!isMounted) {
@@ -209,9 +389,10 @@ export default function App() {
 
     return () => {
       isMounted = false;
-      engine.dispose();
+      engineRef.current?.dispose();
+      engineRef.current = null;
     };
-  }, [prepareGameplayRun]);
+  }, [prepareGameplaySession]);
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
@@ -270,6 +451,19 @@ export default function App() {
     setIsRunning(true);
     appendEntry("player", `> ${playerInput}`);
     const narrationEntryId = appendEntry("narration", "");
+    if (!runRef.current) {
+      const run = await createNewGameplayRun(currentRoomIdRef.current);
+      if (!run) {
+        replaceEntryText(
+          narrationEntryId,
+          "The local Wiki could not create a run record. Check IndexedDB and try again.",
+        );
+        isProcessingCommandRef.current = false;
+        setIsRunning(false);
+        focusCommandInput();
+        return;
+      }
+    }
     const turnNumber = turnNumberRef.current;
     const runtimeBeforeIntent = buildRuntimeContext();
     let shouldProcessQueuedCommand = true;
@@ -714,6 +908,23 @@ export default function App() {
       });
     }
 
+    const save = await recordSave({
+      runId: run.run_id,
+      turnId: committedTurn.turn_id,
+      turnNumber: input.turnNumber,
+      quetzalBlob: createReplaySaveBlob({
+        format: REPLAY_SAVE_FORMAT,
+        source: "command-history-replay",
+        commands: [...committedEngineCommandsRef.current],
+        roomId: currentRoomIdRef.current,
+        inventory: [...inventoryRef.current],
+        containerStates: { ...containerStatesRef.current },
+        previousActionWasFatal: previousActionWasFatalRef.current,
+        mostRecentEngineResponse: mostRecentEngineResponseRef.current,
+        savedAt: Date.now(),
+      }),
+    });
+
     const visibleObjectIds = getVisibleObjectIds(
       gameData,
       currentRoomIdRef.current,
@@ -730,7 +941,7 @@ export default function App() {
       npcs: visibleNpcs,
       currentRoom: currentRoomIdRef.current,
       inventory: inventoryRef.current,
-      engineSaveId,
+      engineSaveId: save.save_id,
     });
     if (updatedRun) {
       runRef.current = updatedRun;
@@ -763,49 +974,6 @@ export default function App() {
       previousActionWasFatal: previousActionWasFatalRef.current,
       mostRecentEngineResponse: mostRecentEngineResponseRef.current,
       label,
-    };
-  }
-
-  async function restoreEngineSnapshot(snapshot: UndoSnapshot) {
-    const gameData = await loadGameData();
-    const restoredEngine = new ZMachineEngineClient();
-    const initResponse = await restoredEngine.init();
-    let actualRoomId =
-      detectRoomIdFromEngineResponse(initResponse, gameData) ?? START_ROOM_ID;
-    let lastResponseText = initResponse.text;
-
-    for (const command of snapshot.commandHistory) {
-      const response = await restoredEngine.sendCommand(command);
-      const detectedRoomId = detectRoomIdFromEngineResponse(response, gameData);
-      if (detectedRoomId) {
-        actualRoomId = detectedRoomId;
-      }
-      lastResponseText = response.text;
-    }
-
-    engineRef.current?.dispose();
-    engineRef.current = restoredEngine;
-    committedEngineCommandsRef.current = [...snapshot.commandHistory];
-    currentRoomIdRef.current = actualRoomId;
-    inventoryRef.current = [...snapshot.inventory];
-    containerStatesRef.current = { ...snapshot.containerStates };
-    previousActionWasFatalRef.current = snapshot.previousActionWasFatal;
-    mostRecentEngineResponseRef.current =
-      snapshot.mostRecentEngineResponse ?? lastResponseText;
-
-    if (actualRoomId !== snapshot.roomId) {
-      console.warn("Zorkish replay restored a different room than expected", {
-        expected_room_id: snapshot.roomId,
-        actual_room_id: actualRoomId,
-        replay_command_count: snapshot.commandHistory.length,
-        replay_tail: snapshot.commandHistory.slice(-5),
-      });
-    }
-
-    return {
-      expectedRoomId: snapshot.roomId,
-      actualRoomId,
-      commandHistory: [...snapshot.commandHistory],
     };
   }
 
@@ -1189,4 +1357,202 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+function createReplaySaveBlob(payload: ReplaySavePayload) {
+  return new Blob([JSON.stringify(payload)], {
+    type: "application/json",
+  });
+}
+
+async function readReplaySavePayload(save: SaveRecord | null) {
+  if (!save) {
+    return null;
+  }
+
+  try {
+    const text =
+      save.quetzal_blob instanceof Blob
+        ? await save.quetzal_blob.text()
+        : new TextDecoder().decode(save.quetzal_blob);
+    return normalizeReplaySavePayload(JSON.parse(text));
+  } catch (error) {
+    console.warn("Zorkish could not read replay save payload", {
+      save_id: save.save_id,
+      error,
+    });
+    return null;
+  }
+}
+
+async function buildReplaySavePayloadFromTurns(run: RunRecord) {
+  const turns = await getTurnsForRun(run.run_id);
+  if (turns.length === 0) {
+    return null;
+  }
+
+  return {
+    format: REPLAY_SAVE_FORMAT,
+    source: "command-history-replay",
+    commands: extractReplayCommands(turns),
+    roomId: run.current_state.current_room,
+    inventory: run.current_state.inventory,
+    containerStates: {},
+    previousActionWasFatal: false,
+    mostRecentEngineResponse: getMostRecentEngineText(turns),
+    savedAt: Date.now(),
+  } satisfies ReplaySavePayload;
+}
+
+function normalizeReplaySavePayload(input: unknown): ReplaySavePayload | null {
+  if (!isRecord(input) || input.format !== REPLAY_SAVE_FORMAT) {
+    return null;
+  }
+
+  const commands = Array.isArray(input.commands)
+    ? input.commands.filter((command): command is string => typeof command === "string")
+    : null;
+  if (!commands) {
+    return null;
+  }
+
+  return {
+    format: REPLAY_SAVE_FORMAT,
+    source: "command-history-replay",
+    commands,
+    roomId: typeof input.roomId === "string" ? input.roomId : START_ROOM_ID,
+    inventory: Array.isArray(input.inventory)
+      ? input.inventory.filter((item): item is string => typeof item === "string")
+      : [],
+    containerStates: normalizeContainerStates(input.containerStates),
+    previousActionWasFatal:
+      typeof input.previousActionWasFatal === "boolean"
+        ? input.previousActionWasFatal
+        : false,
+    mostRecentEngineResponse:
+      typeof input.mostRecentEngineResponse === "string"
+        ? input.mostRecentEngineResponse
+        : null,
+    savedAt: typeof input.savedAt === "number" ? input.savedAt : Date.now(),
+  };
+}
+
+function normalizeContainerStates(input: unknown): ContainerStateMap {
+  if (!isRecord(input)) {
+    return {};
+  }
+
+  const containerStates: ContainerStateMap = {};
+  for (const [objectId, state] of Object.entries(input)) {
+    if (typeof state === "string") {
+      containerStates[objectId] = state as ContainerStateMap[string];
+    }
+  }
+  return containerStates;
+}
+
+function extractReplayCommands(turns: TurnRecord[]) {
+  const commands: string[] = [];
+
+  for (const turn of turns) {
+    if (turn.intent_mapping.intent === "undo") {
+      commands.pop();
+      continue;
+    }
+
+    for (const response of turn.engine_responses) {
+      const command = response.command;
+      const source = response.source;
+      const wasDeath = response.was_death === true;
+      if (
+        typeof command === "string" &&
+        command !== "[zorkish]" &&
+        (source === undefined || source === "engine") &&
+        !wasDeath
+      ) {
+        commands.push(command);
+      }
+    }
+  }
+
+  return commands;
+}
+
+function getMostRecentEngineText(turns: TurnRecord[]) {
+  for (const turn of [...turns].reverse()) {
+    for (const response of [...turn.engine_responses].reverse()) {
+      if (
+        typeof response.text === "string" &&
+        (response.source === undefined || response.source === "engine")
+      ) {
+        return response.text;
+      }
+    }
+  }
+
+  return null;
+}
+
+function createScrollbackEntries(
+  recentTurns: TurnRecord[],
+  nextId: () => number,
+): TerminalEntry[] {
+  const entries: TerminalEntry[] = [];
+
+  for (const turn of [...recentTurns].reverse()) {
+    entries.push({
+      id: nextId(),
+      kind: "player",
+      text: `> ${turn.player_input}`,
+    });
+
+    const narrationText = getTurnNarrationText(turn);
+    if (narrationText) {
+      entries.push({
+        id: nextId(),
+        kind: "narration",
+        text: narrationText,
+      });
+    }
+  }
+
+  return entries.length > 0
+    ? entries
+    : [
+        {
+          id: nextId(),
+          kind: "system",
+          text: "Resumed the saved run. No recent scrollback was found.",
+        },
+      ];
+}
+
+function getTurnNarrationText(turn: TurnRecord) {
+  if (typeof turn.narration.text === "string" && turn.narration.text.trim()) {
+    return turn.narration.text;
+  }
+
+  const engineText = turn.engine_responses
+    .map((response) => response.text)
+    .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+    .join("\n\n");
+
+  return engineText || null;
+}
+
+function formatStatusText(
+  gameData: Awaited<ReturnType<typeof loadGameData>>,
+  roomId: string,
+  inventory: string[],
+  run: RunRecord | null,
+) {
+  const livesText = run ? ` | Lives: ${run.lives_remaining}` : "";
+  const terminalText = run?.ended_reason ? " | Run ended" : "";
+  return `Room: ${getRoom(gameData, roomId)?.name ?? roomId} | Inventory guess: ${
+    inventory.length ? inventory.join(", ") : "empty"
+  }${livesText}${terminalText}`;
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null;
 }

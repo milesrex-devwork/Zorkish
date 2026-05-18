@@ -302,6 +302,25 @@ export async function getRun(runId: string) {
   return database.get("runs", runId);
 }
 
+export async function getMostRecentResumableRun(playerId: string) {
+  const database = await initWiki();
+  const runs = await database.getAll("runs");
+
+  return (
+    runs
+      .filter(
+        (run) =>
+          run.player_id === playerId &&
+          run.ended_at === null &&
+          run.stats.turn_count > 0,
+      )
+      .sort(
+        (left, right) =>
+          right.current_state.last_input_at - left.current_state.last_input_at,
+      )[0] ?? null
+  );
+}
+
 export async function recordTurn(input: RecordTurnInput) {
   const database = await initWiki();
   const now = Date.now();
@@ -378,6 +397,25 @@ export async function getRecentTurns(runId: string, limit = 10) {
     .openCursor(IDBKeyRange.bound([runId, 0], [runId, Number.MAX_SAFE_INTEGER]), "prev");
 
   while (cursor && turns.length < limit) {
+    turns.push(cursor.value);
+    cursor = await cursor.continue();
+  }
+
+  return turns;
+}
+
+export async function getTurnsForRun(runId: string) {
+  const database = await initWiki();
+  const turns: TurnRecord[] = [];
+  let cursor = await database
+    .transaction("turns")
+    .store.index("by-run-turn")
+    .openCursor(
+      IDBKeyRange.bound([runId, 0], [runId, Number.MAX_SAFE_INTEGER]),
+      "next",
+    );
+
+  while (cursor) {
     turns.push(cursor.value);
     cursor = await cursor.continue();
   }
