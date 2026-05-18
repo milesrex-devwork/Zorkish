@@ -129,7 +129,9 @@ export function GameDataDebugView() {
     <aside className="border-t border-amber-100/10 py-4 text-xs text-stone-300">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="font-semibold text-amber-100">Game Data Debug</h2>
+          <h2 className="font-semibold text-amber-100">
+            Static Game Data Debug
+          </h2>
           <p className="mt-1 text-stone-400">
             {error
               ? "Could not load generated game data."

@@ -302,6 +302,13 @@ export async function getRun(runId: string) {
   return database.get("runs", runId);
 }
 
+export async function getRunsByStartedAtDesc() {
+  const database = await initWiki();
+  const runs = await database.getAll("runs");
+
+  return runs.sort((left, right) => right.started_at - left.started_at);
+}
+
 export async function getMostRecentResumableRun(playerId: string) {
   const database = await initWiki();
   const runs = await database.getAll("runs");

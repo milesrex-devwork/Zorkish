@@ -1350,8 +1350,8 @@ export default function App() {
         </section>
         {import.meta.env.DEV ? (
           <div className="max-h-64 overflow-y-auto border-t border-amber-100/10">
-            <GameDataDebugView />
             <WikiDebugView />
+            <GameDataDebugView />
           </div>
         ) : null}
       </div>
