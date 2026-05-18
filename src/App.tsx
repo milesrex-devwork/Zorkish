@@ -384,33 +384,42 @@ export default function App() {
         death_type: isDeath ? classifyDeathType(response.text) : null,
         death_location_id: isDeath ? roomBeforeCommand : null,
       });
+      mostRecentEngineResponseRef.current = response.text;
+      previousActionWasFatalRef.current = isDeath;
+      if (isDeath) {
+        const restoreResult = await restoreEngineSnapshot(undoSnapshotBeforeTurn);
+        currentRoomIdRef.current = roomBeforeCommand;
+        previousActionWasFatalRef.current = true;
+        mostRecentEngineResponseRef.current = response.text;
+        console.log("Zorkish restored engine after death", {
+          death_command: command,
+          detected_resurrection_room_id: detectedRoomId,
+          restored_room_id: restoreResult.actualRoomId,
+          replay_command_count: undoSnapshotBeforeTurn.commandHistory.length,
+          replay_tail: undoSnapshotBeforeTurn.commandHistory.slice(-5),
+        });
+        break;
+      }
+
       committedEngineCommandsRef.current = [
         ...committedEngineCommandsRef.current,
         command,
       ];
-      if (!isDeath) {
-        containerStatesRef.current = applyContainerStateGuess(
-          command,
-          response.text,
-          containerStatesRef.current,
-          gameData,
-          currentRoomIdRef.current,
-          inventoryRef.current,
-        );
-        inventoryRef.current = applyInventoryGuess(
-          command,
-          response.text,
-          inventoryRef.current,
-          gameData,
-          currentRoomIdRef.current,
-        );
-      }
-      mostRecentEngineResponseRef.current = response.text;
-      previousActionWasFatalRef.current = isDeath;
-      if (isDeath) {
-        currentRoomIdRef.current = roomBeforeCommand;
-        break;
-      }
+      containerStatesRef.current = applyContainerStateGuess(
+        command,
+        response.text,
+        containerStatesRef.current,
+        gameData,
+        currentRoomIdRef.current,
+        inventoryRef.current,
+      );
+      inventoryRef.current = applyInventoryGuess(
+        command,
+        response.text,
+        inventoryRef.current,
+        gameData,
+        currentRoomIdRef.current,
+      );
     }
 
     return responses;
@@ -758,21 +767,46 @@ export default function App() {
   }
 
   async function restoreEngineSnapshot(snapshot: UndoSnapshot) {
+    const gameData = await loadGameData();
     const restoredEngine = new ZMachineEngineClient();
-    await restoredEngine.init();
+    const initResponse = await restoredEngine.init();
+    let actualRoomId =
+      detectRoomIdFromEngineResponse(initResponse, gameData) ?? START_ROOM_ID;
+    let lastResponseText = initResponse.text;
 
     for (const command of snapshot.commandHistory) {
-      await restoredEngine.sendCommand(command);
+      const response = await restoredEngine.sendCommand(command);
+      const detectedRoomId = detectRoomIdFromEngineResponse(response, gameData);
+      if (detectedRoomId) {
+        actualRoomId = detectedRoomId;
+      }
+      lastResponseText = response.text;
     }
 
     engineRef.current?.dispose();
     engineRef.current = restoredEngine;
     committedEngineCommandsRef.current = [...snapshot.commandHistory];
-    currentRoomIdRef.current = snapshot.roomId;
+    currentRoomIdRef.current = actualRoomId;
     inventoryRef.current = [...snapshot.inventory];
     containerStatesRef.current = { ...snapshot.containerStates };
     previousActionWasFatalRef.current = snapshot.previousActionWasFatal;
-    mostRecentEngineResponseRef.current = snapshot.mostRecentEngineResponse;
+    mostRecentEngineResponseRef.current =
+      snapshot.mostRecentEngineResponse ?? lastResponseText;
+
+    if (actualRoomId !== snapshot.roomId) {
+      console.warn("Zorkish replay restored a different room than expected", {
+        expected_room_id: snapshot.roomId,
+        actual_room_id: actualRoomId,
+        replay_command_count: snapshot.commandHistory.length,
+        replay_tail: snapshot.commandHistory.slice(-5),
+      });
+    }
+
+    return {
+      expectedRoomId: snapshot.roomId,
+      actualRoomId,
+      commandHistory: [...snapshot.commandHistory],
+    };
   }
 
   async function handlePostCommitDeath(input: {
