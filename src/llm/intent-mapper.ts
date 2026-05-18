@@ -125,9 +125,15 @@ function buildIntentMappingContext(
         gameData,
         runtimeContext.currentRoomId,
         runtimeContext.inventory,
+        runtimeContext.containerStates,
       ),
     },
-    inventory: getVisibleObjects(gameData, runtimeContext.currentRoomId, runtimeContext.inventory)
+    inventory: getVisibleObjects(
+      gameData,
+      runtimeContext.currentRoomId,
+      runtimeContext.inventory,
+      runtimeContext.containerStates,
+    )
       .filter((object) => runtimeContext.inventory.includes(object.id)),
     recent_turns: runtimeContext.recentTurns
       .slice(0, 10)
@@ -138,6 +144,7 @@ function buildIntentMappingContext(
       "Checkpoint 5 executes mapped action commands after this call; the Z-machine response remains authoritative.",
       "Use live current_room, inventory, recent_turns, and active_observations as the only state you can rely on.",
       "If the player asks for an action that maps cleanly to Zork syntax, emit the command and let the engine accept or reject it.",
+      "Treat current_room.visible_objects as visibility-filtered runtime truth. Contents of closed containers are omitted and should not be assumed visible.",
       "Do not narrate. Do not include markdown. Output one JSON object only.",
     ],
     canonical_verbs: gameData.verbs,

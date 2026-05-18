@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createRun,
   getActiveObservations,
@@ -8,6 +8,7 @@ import {
   getOrCreatePlayer,
   getRecentTurns,
   getRun,
+  getRunsByStartedAtDesc,
   recordDeath,
   recordObservation,
   recordSave,
@@ -23,7 +24,6 @@ import type {
 } from "../wiki/schema";
 
 const DEBUG_PLAYER_ID = "wiki-debug-player";
-const LAST_RUN_STORAGE_KEY = "zorkish-wiki-debug-last-run";
 const BATCH_TURN_COUNT = 100;
 const DEBUG_ROOMS = ["WEST-OF-HOUSE", "KITCHEN", "CELLAR"];
 const DEBUG_OBJECTS = ["MAILBOX", "LANTERN", "TROLL"];
@@ -51,35 +51,45 @@ function emptySnapshot(): DebugSnapshot {
 }
 
 export function WikiDebugView() {
-  const [lastRunId, setLastRunId] = useState<string | null>(() =>
-    localStorage.getItem(LAST_RUN_STORAGE_KEY),
-  );
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [showEmptyRuns, setShowEmptyRuns] = useState(false);
   const [snapshot, setSnapshot] = useState<DebugSnapshot>(emptySnapshot);
   const [status, setStatus] = useState("Loading wiki debug data...");
   const [isBusy, setIsBusy] = useState(false);
 
-  const refreshSnapshot = useCallback(async (runId: string | null) => {
-    await getOrCreatePlayer({
-      playerId: DEBUG_PLAYER_ID,
-      playerProfile: "Debug harness player",
-    });
+  const visibleRuns = useMemo(
+    () =>
+      showEmptyRuns
+        ? runs
+        : runs.filter((run) => run.stats.turn_count > 0),
+    [runs, showEmptyRuns],
+  );
 
-    const playerDeaths = await getDeathsForPlayer(DEBUG_PLAYER_ID);
+  const refreshRunList = useCallback(async () => {
+    const loadedRuns = await getRunsByStartedAtDesc();
+    setRuns(loadedRuns);
+    return loadedRuns;
+  }, []);
+
+  const refreshSnapshot = useCallback(async (runId: string | null) => {
     const nextSnapshot: DebugSnapshot = {
       ...emptySnapshot(),
-      playerDeathCount: playerDeaths.length,
     };
 
     if (runId) {
       const queryStart = performance.now();
-      const [run, recentTurns, runDeaths, observations, latestSave] =
-        await Promise.all([
-          getRun(runId),
-          getRecentTurns(runId, 10),
-          getDeathsForRun(runId),
-          getActiveObservations(runId),
-          getLatestSaveForRun(runId),
-        ]);
+      const run = await getRun(runId);
+      const [recentTurns, runDeaths, observations, latestSave, playerDeaths] =
+        run
+          ? await Promise.all([
+              getRecentTurns(runId, 10),
+              getDeathsForRun(runId),
+              getActiveObservations(runId),
+              getLatestSaveForRun(runId),
+              getDeathsForPlayer(run.player_id),
+            ])
+          : [[], [], [], null, []];
       const queryDurationMs = performance.now() - queryStart;
 
       nextSnapshot.run = run ?? null;
@@ -88,25 +98,55 @@ export function WikiDebugView() {
       nextSnapshot.observations = observations;
       nextSnapshot.latestSave = latestSave;
       nextSnapshot.queryDurationMs = queryDurationMs;
+      nextSnapshot.playerDeathCount = playerDeaths.length;
     }
 
     setSnapshot(nextSnapshot);
     setStatus(
-      runId
-        ? `Loaded persisted debug run ${runId}.`
-        : "No debug run yet. Create one to exercise the wiki stores.",
+      runId && nextSnapshot.run
+        ? `Loaded run ${runId}.`
+        : "No gameplay runs yet.",
     );
     return nextSnapshot;
   }, []);
 
   useEffect(() => {
     Promise.resolve()
-      .then(() => refreshSnapshot(lastRunId))
+      .then(async () => {
+        const loadedRuns = await refreshRunList();
+        const defaultRunId =
+          loadedRuns.find((run) => run.stats.turn_count > 0)?.run_id ?? null;
+        setSelectedRunId(defaultRunId);
+        await refreshSnapshot(defaultRunId);
+      })
       .catch((error: unknown) => {
         console.error("Wiki debug refresh failed", error);
         setStatus("Could not read the wiki debug data.");
       });
-  }, [lastRunId, refreshSnapshot]);
+  }, [refreshRunList, refreshSnapshot]);
+
+  async function selectRun(runId: string) {
+    setSelectedRunId(runId);
+    await refreshSnapshot(runId);
+  }
+
+  async function updateShowEmptyRuns(shouldShowEmptyRuns: boolean) {
+    setShowEmptyRuns(shouldShowEmptyRuns);
+
+    if (shouldShowEmptyRuns || !selectedRunId) {
+      return;
+    }
+
+    const selectedRun = runs.find((run) => run.run_id === selectedRunId);
+    if (!selectedRun || selectedRun.stats.turn_count > 0) {
+      return;
+    }
+
+    const nextRunId =
+      runs.find((run) => run.stats.turn_count > 0)?.run_id ?? null;
+    setSelectedRunId(nextRunId);
+    await refreshSnapshot(nextRunId);
+  }
 
   async function createFakeRunData() {
     setIsBusy(true);
@@ -206,8 +246,8 @@ export function WikiDebugView() {
         score: latestTurn.turn_number,
       });
 
-      localStorage.setItem(LAST_RUN_STORAGE_KEY, run.run_id);
-      setLastRunId(run.run_id);
+      await refreshRunList();
+      setSelectedRunId(run.run_id);
       const refreshed = await refreshSnapshot(run.run_id);
       setStatus(
         `Added turns ${firstTurnNumber}-${latestTurn.turn_number}; last-10 query returned ${refreshed.recentTurns.length} turns in ${formatMs(refreshed.queryDurationMs)}.`,
@@ -221,7 +261,7 @@ export function WikiDebugView() {
   }
 
   async function getOrCreateDebugRun(playerId: string) {
-    const existingRun = lastRunId ? await getRun(lastRunId) : null;
+    const existingRun = runs.find((run) => run.player_id === DEBUG_PLAYER_ID);
     if (existingRun) {
       return existingRun;
     }
@@ -232,8 +272,6 @@ export function WikiDebugView() {
       currentRoom: "WEST-OF-HOUSE",
       engineSaveId: "debug-save-before-turn",
     });
-    localStorage.setItem(LAST_RUN_STORAGE_KEY, run.run_id);
-    setLastRunId(run.run_id);
     return run;
   }
 
@@ -241,24 +279,78 @@ export function WikiDebugView() {
     <aside className="border-t border-amber-100/10 py-4 text-xs text-stone-300">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="font-semibold text-amber-100">Wiki Debug</h2>
+          <h2 className="font-semibold text-amber-100">
+            Game Data Debug - Runs
+          </h2>
           <p className="mt-1 text-stone-400">{status}</p>
         </div>
-        <button
-          className="border border-amber-100/20 px-3 py-2 text-amber-100 transition hover:border-amber-100/50 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={isBusy}
-          onClick={createFakeRunData}
-          type="button"
-        >
-          Add 100 fake turns
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-stone-300">
+            <input
+              checked={showEmptyRuns}
+              className="accent-amber-200"
+              onChange={(event) =>
+                void updateShowEmptyRuns(event.target.checked)
+              }
+              type="checkbox"
+            />
+            <span>Show empty runs</span>
+          </label>
+          <button
+            className="border border-amber-100/20 px-3 py-2 text-amber-100 transition hover:border-amber-100/50 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={isBusy}
+            onClick={createFakeRunData}
+            type="button"
+          >
+            Add 100 fake turns
+          </button>
+        </div>
       </div>
+
+      <section className="mt-4">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h3 className="font-medium text-amber-100">Runs</h3>
+          <p className="font-mono text-stone-500">
+            {visibleRuns.length} shown / {runs.length} total
+          </p>
+        </div>
+        {visibleRuns.length > 0 ? (
+          <div className="max-h-48 overflow-y-auto border border-amber-100/10">
+            <table className="w-full border-collapse text-left font-mono text-[11px]">
+              <thead className="sticky top-0 bg-stone-950 text-stone-500">
+                <tr>
+                  <th className="px-2 py-2 font-medium">Run</th>
+                  <th className="px-2 py-2 font-medium">Started</th>
+                  <th className="px-2 py-2 font-medium">Turns</th>
+                  <th className="px-2 py-2 font-medium">Deaths</th>
+                  <th className="px-2 py-2 font-medium">Room</th>
+                  <th className="px-2 py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRuns.map((run) => (
+                  <RunSelectorRow
+                    isSelected={run.run_id === selectedRunId}
+                    key={run.run_id}
+                    onSelect={() => void selectRun(run.run_id)}
+                    run={run}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="border border-amber-100/10 px-3 py-3 text-stone-500">
+            No gameplay runs yet.
+          </p>
+        )}
+      </section>
 
       <dl className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <div>
-          <dt className="text-stone-500">Last run</dt>
+          <dt className="text-stone-500">Selected run</dt>
           <dd className="mt-1 break-all font-mono text-stone-200">
-            {lastRunId ?? "none"}
+            {selectedRunId ?? "none"}
           </dd>
         </div>
         <div>
@@ -293,7 +385,7 @@ export function WikiDebugView() {
         </div>
       </dl>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <DebugList
           items={snapshot.recentTurns.map(
             (turn) => `#${turn.turn_number}: ${turn.player_input}`,
@@ -317,6 +409,19 @@ export function WikiDebugView() {
         />
         <DebugList
           items={[
+            `room: ${snapshot.run?.current_state.current_room || "none"}`,
+            `inventory: ${
+              snapshot.run?.current_state.inventory.join(", ") || "empty"
+            }`,
+            `lives: ${snapshot.run?.lives_remaining ?? "none"}`,
+            `engine save: ${
+              snapshot.run?.current_state.engine_save_id || "none"
+            }`,
+          ]}
+          title="Current State"
+        />
+        <DebugList
+          items={[
             `rooms: ${snapshot.run?.discovered.rooms.join(", ") || "none"}`,
             `objects: ${snapshot.run?.discovered.objects.join(", ") || "none"}`,
             `npcs: ${snapshot.run?.discovered.npcs.join(", ") || "none"}`,
@@ -329,6 +434,45 @@ export function WikiDebugView() {
         />
       </div>
     </aside>
+  );
+}
+
+function RunSelectorRow({
+  isSelected,
+  onSelect,
+  run,
+}: {
+  isSelected: boolean;
+  onSelect: () => void;
+  run: RunRecord;
+}) {
+  return (
+    <tr
+      className={`cursor-pointer border-t border-amber-100/10 transition ${
+        isSelected
+          ? "bg-amber-100/10 text-amber-100"
+          : "text-stone-300 hover:bg-stone-900"
+      }`}
+      onClick={onSelect}
+    >
+      <td className="px-2 py-2">
+        <button
+          className="font-mono text-inherit underline-offset-2 hover:underline"
+          type="button"
+        >
+          {truncateRunId(run.run_id)}
+        </button>
+      </td>
+      <td className="px-2 py-2">{formatTimestamp(run.started_at)}</td>
+      <td className="px-2 py-2">{run.stats.turn_count}</td>
+      <td className="px-2 py-2">{run.stats.death_count}</td>
+      <td className="px-2 py-2">
+        {run.current_state.current_room || "\u2014"}
+      </td>
+      <td className="px-2 py-2">
+        {run.ended_at === null ? "active" : run.ended_reason || "ended"}
+      </td>
+    </tr>
   );
 }
 
@@ -353,4 +497,18 @@ function formatMs(value: number | null) {
   }
 
   return `${value.toFixed(1)} ms`;
+}
+
+function truncateRunId(runId: string) {
+  return runId.length > 8 ? runId.slice(0, 8) : runId;
+}
+
+function formatTimestamp(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(timestamp);
 }

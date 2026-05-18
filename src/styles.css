@@ -20,3 +20,49 @@ textarea {
   font: inherit;
 }
 
+.terminal-command-input {
+  caret-color: #fef3c7;
+}
+
+.terminal-command-input::placeholder {
+  color: #78716c;
+  opacity: 1;
+}
+
+.terminal-command-input:disabled {
+  color: #78716c;
+}
+
+.terminal-scrollbar {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.terminal-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.terminal-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.terminal-scrollbar::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid #050505;
+}
+
+.terminal-scrollbar:hover,
+.terminal-scrollbar-active {
+  scrollbar-color: rgba(87, 83, 78, 0.7) #050505;
+}
+
+.terminal-scrollbar:hover::-webkit-scrollbar-track,
+.terminal-scrollbar-active::-webkit-scrollbar-track {
+  background: #050505;
+}
+
+.terminal-scrollbar:hover::-webkit-scrollbar-thumb,
+.terminal-scrollbar-active::-webkit-scrollbar-thumb {
+  background-color: rgba(87, 83, 78, 0.75);
+}
